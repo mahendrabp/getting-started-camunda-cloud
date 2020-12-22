@@ -21,6 +21,7 @@ func main() {
 	deploy(zbClient)
 
 	go zbClient.NewJobWorker().JobType("get-time").Handler(handleGetTime).Open()
+	go zbClient.NewJobWorker().JobType("make-greeting").Handler(handleMakeGreeting).Open()
 
 	http.HandleFunc("/start", createStartHandler(zbClient))
 	http.ListenAndServe(":3000", nil)
@@ -40,39 +41,14 @@ type GetTimeCompleteVariables struct {
 	Time Time `json:"time"`
 }
 
-func handleGetTime(client worker.JobClient, job entities.Job) {
-	//log.Println(job)
-	//ctx := context.Background()
-	//client.NewCompleteJobCommand().JobKey(job.Key).Send(ctx)
+type BoundHandler func(w http.ResponseWriter, r *http.Request)
 
-	var (
-		data []byte
-	)
+type MakeGreetingCompleteVariables struct {
+	Say string `json:"say"`
+}
 
-	response, err := http.Get("https://json-api.joshwulf.com/time")
-	if err != nil {
-		fmt.Printf("The HTTP request failed with error %s\n", err)
-		return
-	} else {
-		data, _ = ioutil.ReadAll(response.Body)
-	}
-
-	var time Time
-	err = json.Unmarshal(data, &time)
-	if err != nil {
-		log.Fatalln(err)
-		return
-	}
-
-	payload := &GetTimeCompleteVariables{time}
-
-	ctx := context.Background()
-	cmd, _ := client.NewCompleteJobCommand().JobKey(job.Key).VariablesFromObject(payload)
-	_, err = cmd.Send(ctx)
-
-	if err != nil {
-		log.Fatalln(err)
-	}
+type InitialVariables struct {
+	Name string `json:"name"`
 }
 
 func getClient() zbc.Client {
@@ -119,16 +95,20 @@ func deploy(zbClient zbc.Client) {
 	log.Println(response.String())
 }
 
-type BoundHandler func(w http.ResponseWriter, r *http.Request)
-
 func createStartHandler(client zbc.Client) BoundHandler {
 	f := func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.Background()
-		request, err := client.NewCreateInstanceCommand().BPMNProcessId("test-process").LatestVersion().WithResult().Send(ctx)
+		variables := &InitialVariables{"Mahe"}
+		request, err := client.NewCreateInstanceCommand().BPMNProcessId("test-process").LatestVersion().VariablesFromObject(variables)
 		if err != nil {
 			panic(err)
 		}
-		fmt.Fprint(w, request.String())
+		response, _ := request.WithResult().Send(ctx)
+		//fmt.Fprint(w, request.String())
+
+		var result map[string]interface{}
+		json.Unmarshal([]byte(response.Variables), &result)
+		fmt.Fprint(w, result["say"])
 	}
 	return f
 }
@@ -142,4 +122,52 @@ func roleToString(role pb.Partition_PartitionBrokerRole) string {
 	default:
 		return "Unknown"
 	}
+}
+
+func handleGetTime(client worker.JobClient, job entities.Job) {
+	log.Println(job)
+	//ctx := context.Background()
+	//client.NewCompleteJobCommand().JobKey(job.Key).Send(ctx)
+
+	var (
+		data []byte
+	)
+
+	response, err := http.Get("https://json-api.joshwulf.com/time")
+	if err != nil {
+		fmt.Printf("The HTTP request failed with error %s\n", err)
+		return
+	} else {
+		data, _ = ioutil.ReadAll(response.Body)
+	}
+
+	var time Time
+	err = json.Unmarshal(data, &time)
+	if err != nil {
+		log.Fatalln(err)
+		return
+	}
+
+	payload := &GetTimeCompleteVariables{time}
+
+	ctx := context.Background()
+	cmd, _ := client.NewCompleteJobCommand().JobKey(job.Key).VariablesFromObject(payload)
+	_, err = cmd.Send(ctx)
+
+	if err != nil {
+		log.Fatalln(err)
+	}
+}
+
+func handleMakeGreeting(client worker.JobClient, job entities.Job) {
+	variables, _ := job.GetVariablesAsMap()
+	name := variables["name"]
+	var headers, _ = job.GetCustomHeadersAsMap()
+	greeting := headers["greeting"]
+	greetingString := greeting + " " + name.(string)
+	say := &MakeGreetingCompleteVariables{greetingString}
+	log.Println(say)
+	ctx := context.Background()
+	response, _ := client.NewCompleteJobCommand().JobKey(job.Key).VariablesFromObject(say)
+	response.Send(ctx)
 }
